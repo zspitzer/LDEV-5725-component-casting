@@ -8,18 +8,15 @@ on:
         required: true
         description: Initial Lucee version (start with this)
         type: string
-        default: 7.0.0.374-SNAPSHOT
+        default: 7.0.2.33-SNAPSHOT
       LUCEE_VERSION_B:
         required: true
         description: Version to deploy (downgrade to this)
         type: string
-        default: 7.0.0.373-SNAPSHOT
+        default: 7.0.2.32-SNAPSHOT
 
 env:
   TOMCAT_TEMPLATE: https://cdn.lucee.org/express-templates/lucee-tomcat-11.0.14-template.zip
-  # DOWNGRADE scenario: start with higher version, deploy lower version
-  PUSH_VERSION_A: 7.0.0.374-SNAPSHOT
-  PUSH_VERSION_B: 7.0.0.373-SNAPSHOT
   # Lucee logging for debugging
   LUCEE_LOGGING_FORCE_APPENDER: console
   LUCEE_LOGGING_FORCE_LEVEL: debug
@@ -27,20 +24,29 @@ env:
 jobs:
   test-component-casting:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Lucee 7.0"
+            version_a: "7.0.2.33-SNAPSHOT"
+            version_b: "7.0.2.32-SNAPSHOT"
+          - name: "Lucee 6.2"
+            version_a: "6.2.5.16-SNAPSHOT"
+            version_b: "6.2.5.15-SNAPSHOT"
+    name: ${{ matrix.name }} (${{ matrix.version_a }} → ${{ matrix.version_b }})
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set versions for push workflows
-        if: github.event_name == 'push'
+      - name: Set versions
         run: |
-          echo "VERSION_A=${{ env.PUSH_VERSION_A }}" >> $GITHUB_ENV
-          echo "VERSION_B=${{ env.PUSH_VERSION_B }}" >> $GITHUB_ENV
-
-      - name: Set versions for manual workflows
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          echo "VERSION_A=${{ github.event.inputs.LUCEE_VERSION_A }}" >> $GITHUB_ENV
-          echo "VERSION_B=${{ github.event.inputs.LUCEE_VERSION_B }}" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION_A=${{ github.event.inputs.LUCEE_VERSION_A }}" >> $GITHUB_ENV
+            echo "VERSION_B=${{ github.event.inputs.LUCEE_VERSION_B }}" >> $GITHUB_ENV
+          else
+            echo "VERSION_A=${{ matrix.version_a }}" >> $GITHUB_ENV
+            echo "VERSION_B=${{ matrix.version_b }}" >> $GITHUB_ENV
+          fi
 
       - name: Setup Java
         uses: actions/setup-java@v4
