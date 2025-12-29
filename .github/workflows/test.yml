@@ -28,9 +28,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "Lucee 7.0"
+          - name: "Lucee 7.0.2"
             version_a: "7.0.2.33-SNAPSHOT"
             version_b: "7.0.2.32-SNAPSHOT"
+          - name: "Lucee 7.0.0 (bug versions)"
+            version_a: "7.0.0.374-SNAPSHOT"
+            version_b: "7.0.0.373-SNAPSHOT"
           - name: "Lucee 6.2"
             version_a: "6.2.5.16-SNAPSHOT"
             version_b: "6.2.5.15-SNAPSHOT"
