@@ -94,13 +94,18 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # First hit the actual admin page to load lucee-admin.lar bundle properly
+          # Use -L to follow redirects so the Application.cfc from the archive gets loaded
           echo "### Hitting /lucee/admin/server.cfm to load admin archive bundle..." | tee -a $GITHUB_STEP_SUMMARY
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-response.txt http://127.0.0.1:8888/lucee/admin/server.cfm 2>&1)
+          HTTP_STATUS=$(curl -sL -w "%{http_code}" -o /tmp/admin-response.txt http://127.0.0.1:8888/lucee/admin/server.cfm 2>&1)
           echo "Admin HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Also hit web admin
+          # Also hit web admin - follow redirects
           echo "### Hitting /lucee/admin/web.cfm..." | tee -a $GITHUB_STEP_SUMMARY
-          curl -s -o /tmp/admin-web.txt http://127.0.0.1:8888/lucee/admin/web.cfm 2>&1 || true
+          curl -sL -o /tmp/admin-web.txt http://127.0.0.1:8888/lucee/admin/web.cfm 2>&1 || true
+
+          # Hit admin.cfm directly which processes the Application.cfc
+          echo "### Hitting /lucee/admin.cfm..." | tee -a $GITHUB_STEP_SUMMARY
+          curl -sL -o /tmp/admin-main.txt http://127.0.0.1:8888/lucee/admin.cfm 2>&1 || true
 
           echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -146,29 +151,25 @@ jobs:
           echo "Deployed $VERSION_B.lco" | tee -a $GITHUB_STEP_SUMMARY
           ls -la "$DEPLOY_DIR/" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Trigger HOT reload via admin API (this keeps the JVM running, which is key to reproducing the bug)
+          # Wait for controller to pick up the .lco (polls every 10 seconds)
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Triggering HOT reload via admin.restart()..." | tee -a $GITHUB_STEP_SUMMARY
-          echo "This keeps the JVM running but reloads the Lucee engine - the bug occurs when archive bundles aren't refreshed" | tee -a $GITHUB_STEP_SUMMARY
+          echo "Waiting for controller to pick up .lco (polls every 10 seconds)..." | tee -a $GITHUB_STEP_SUMMARY
 
-          # Call the restart endpoint - this will return an error as the engine restarts
-          curl -s -m 10 http://127.0.0.1:8888/trigger-restart.cfm || echo "Request timed out (expected during restart)"
-
-          # Wait for hot reload to complete
-          echo "Waiting for Lucee to hot reload..."
-          sleep 10
-
+          # Wait and poll for version change
           for i in {1..30}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ 2>/dev/null || echo "000")
-            if echo "$HTTP_CODE" | grep -q "200\|302\|404"; then
-              echo "Lucee is back up after hot reload ($i attempts)"
+            sleep 3
+            # Check current version
+            CURRENT_VERSION=$(curl -s http://127.0.0.1:8888/check-bundle-cache.cfm 2>/dev/null | grep "Lucee Version:" | head -1 || echo "unknown")
+            echo "Check $i: $CURRENT_VERSION"
+
+            if echo "$CURRENT_VERSION" | grep -q "$VERSION_B"; then
+              echo "Version updated to $VERSION_B after $((i*3)) seconds" | tee -a $GITHUB_STEP_SUMMARY
               break
             fi
-            echo "Waiting... ($i/30) - HTTP: $HTTP_CODE"
-            sleep 2
           done
 
-          sleep 3
+          # Give it a moment to stabilize
+          sleep 2
 
       - name: Step 3 - Test admin access after update (BUG CHECK)
         run: |
@@ -176,8 +177,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # First, hit the ACTUAL admin page - this is where the bug should trigger
+          # Use -L to follow redirects so the Application.cfc from the archive gets loaded
           echo "### Hitting /lucee/admin/server.cfm after version update..." | tee -a $GITHUB_STEP_SUMMARY
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-after-update.txt http://127.0.0.1:8888/lucee/admin/server.cfm 2>&1)
+          HTTP_STATUS=$(curl -sL -w "%{http_code}" -o /tmp/admin-after-update.txt http://127.0.0.1:8888/lucee/admin/server.cfm 2>&1)
           echo "Admin HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
 
           # Check if admin returned an error about casting
