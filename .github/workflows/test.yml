@@ -105,9 +105,9 @@ jobs:
             exit 1
           fi
 
-      - name: Step 2 - Deploy Version B .lco and restart
+      - name: Step 2 - Deploy Version B .lco and trigger HOT reload
         run: |
-          echo "## Step 2: Deploy Version B ($VERSION_B) and restart Tomcat" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 2: Deploy Version B ($VERSION_B) and trigger HOT reload (not full restart)" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Find the lucee-server deploy folder
@@ -127,26 +127,29 @@ jobs:
           echo "Deployed $VERSION_B.lco" | tee -a $GITHUB_STEP_SUMMARY
           ls -la "$DEPLOY_DIR/" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Restart Tomcat to pick up the new version
+          # Trigger HOT reload via admin API (this keeps the JVM running, which is key to reproducing the bug)
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Restarting Tomcat..." | tee -a $GITHUB_STEP_SUMMARY
+          echo "Triggering HOT reload via admin.restart()..." | tee -a $GITHUB_STEP_SUMMARY
+          echo "This keeps the JVM running but reloads the Lucee engine - the bug occurs when archive bundles aren't refreshed" | tee -a $GITHUB_STEP_SUMMARY
 
-          cd lucee-express
-          ./bin/shutdown.sh || true
-          sleep 5
-          ./bin/startup.sh
+          # Call the restart endpoint - this will return an error as the engine restarts
+          curl -s -m 10 http://127.0.0.1:8888/trigger-restart.cfm || echo "Request timed out (expected during restart)"
 
-          # Wait for restart
-          echo "Waiting for Lucee to restart..."
-          for i in {1..60}; do
-            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ 2>/dev/null | grep -q "200\|302\|404"; then
-              echo "Lucee is back up after $i seconds"
+          # Wait for hot reload to complete
+          echo "Waiting for Lucee to hot reload..."
+          sleep 10
+
+          for i in {1..30}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ 2>/dev/null || echo "000")
+            if echo "$HTTP_CODE" | grep -q "200\|302\|404"; then
+              echo "Lucee is back up after hot reload ($i attempts)"
               break
             fi
-            sleep 1
+            echo "Waiting... ($i/30) - HTTP: $HTTP_CODE"
+            sleep 2
           done
 
-          sleep 5
+          sleep 3
 
       - name: Step 3 - Test admin access after update (BUG CHECK)
         run: |
