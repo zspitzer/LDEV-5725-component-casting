@@ -20,6 +20,9 @@ env:
   # DOWNGRADE scenario: start with higher version, deploy lower version
   PUSH_VERSION_A: 7.0.0.374-SNAPSHOT
   PUSH_VERSION_B: 7.0.0.373-SNAPSHOT
+  # Lucee logging for debugging
+  LUCEE_LOGGING_FORCE_APPENDER: console
+  LUCEE_LOGGING_FORCE_LEVEL: debug
 
 jobs:
   test-component-casting:
@@ -82,6 +85,13 @@ jobs:
         run: |
           cd lucee-express
           chmod +x bin/*.sh
+
+          # Create setenv.sh with Lucee logging env vars
+          cat > bin/setenv.sh << 'SETENV'
+          export LUCEE_LOGGING_FORCE_APPENDER=console
+          export LUCEE_LOGGING_FORCE_LEVEL=debug
+          SETENV
+          chmod +x bin/setenv.sh
 
           # Start Tomcat in background
           ./bin/startup.sh
