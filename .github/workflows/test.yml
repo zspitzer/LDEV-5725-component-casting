@@ -16,7 +16,7 @@ on:
         default: 7.0.0.373-SNAPSHOT
 
 env:
-  LUCEE_INSTALLER_VERSION: 6.2.4.24
+  TOMCAT_TEMPLATE: https://cdn.lucee.org/express-templates/lucee-tomcat-11.0.14-template.zip
   PUSH_VERSION_A: 7.0.0.299-SNAPSHOT
   PUSH_VERSION_B: 7.0.0.373-SNAPSHOT
 
@@ -38,58 +38,55 @@ jobs:
           echo "VERSION_A=${{ github.event.inputs.LUCEE_VERSION_A }}" >> $GITHUB_ENV
           echo "VERSION_B=${{ github.event.inputs.LUCEE_VERSION_B }}" >> $GITHUB_ENV
 
-      - name: Cache Lucee Installer
-        uses: actions/cache@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
-          path: lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run
-          key: lucee-installer-${{ env.LUCEE_INSTALLER_VERSION }}
+          distribution: 'temurin'
+          java-version: '21'
 
-      - name: Download Lucee Installer and JARs
+      - name: Download and setup Lucee Express
         run: |
-          # Download installer if not cached
-          if [ ! -f "lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run" ]; then
-            echo "Downloading Lucee installer..."
-            curl --fail -s https://cdn.lucee.org/lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run \
-              -o lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run
-          fi
-          ls -lh *.run
+          # Download template
+          echo "Downloading Tomcat template..."
+          curl --fail -sL "$TOMCAT_TEMPLATE" -o tomcat-template.zip
+          unzip -q tomcat-template.zip -d lucee-express
 
-          # Download version A jar
+          # Download Lucee version A
           echo "Downloading Lucee $VERSION_A..."
-          curl --fail -s https://cdn.lucee.org/lucee-$VERSION_A.jar -o lucee-$VERSION_A.jar
-          ls -lh lucee-$VERSION_A.jar
+          curl --fail -sL "https://cdn.lucee.org/lucee-$VERSION_A.jar" -o lucee-express/lib/lucee-$VERSION_A.jar
 
-          # Download version B lco (for deploy folder update)
+          # Download Lucee version B .lco for later
           echo "Downloading Lucee $VERSION_B .lco..."
-          curl --fail -s https://cdn.lucee.org/$VERSION_B.lco -o $VERSION_B.lco
-          ls -lh $VERSION_B.lco
+          curl --fail -sL "https://cdn.lucee.org/$VERSION_B.lco" -o $VERSION_B.lco
 
-      - name: Install Lucee with Version A
+          ls -la lucee-express/lib/
+          ls -la *.lco
+
+      - name: Copy test files to webroot
         run: |
-          chmod +x lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run
-          sudo ./lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run \
-            --mode unattended --installconn false --installmodcfml false --installiis false \
-            --startatboot false --luceepass admin --systemuser lucee --installjre true
+          cp tests/*.cfm lucee-express/webapps/ROOT/
+          ls -la lucee-express/webapps/ROOT/
 
-          # Replace loader jar with version A
-          sudo rm -f /opt/lucee/lib/lucee-*.jar
-          sudo cp lucee-$VERSION_A.jar /opt/lucee/lib/
-
-          echo "Installed Lucee with version A: $VERSION_A"
-
-      - name: Start Lucee
+      - name: Start Lucee with Version A
         run: |
-          sudo /opt/lucee/lucee_ctl start
+          cd lucee-express
+          chmod +x bin/*.sh
+
+          # Start Tomcat in background
+          ./bin/startup.sh
+
+          # Wait for startup
+          echo "Waiting for Lucee to start..."
+          for i in {1..60}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ 2>/dev/null | grep -q "200\|302\|404"; then
+              echo "Lucee is up after $i seconds"
+              break
+            fi
+            sleep 1
+          done
+
+          # Give it a bit more time to fully initialize
           sleep 5
-
-          # Verify it's running
-          echo "Checking Lucee version..."
-          curl -s http://127.0.0.1:8888/lucee/admin/server.cfm || echo "Admin page load attempted"
-
-      - name: Copy test files
-        run: |
-          sudo cp tests/*.cfm /opt/lucee/tomcat/webapps/ROOT/
-          sudo chown lucee:lucee /opt/lucee/tomcat/webapps/ROOT/*.cfm
 
       - name: Step 1 - Access admin to load archive bundle
         run: |
@@ -104,64 +101,74 @@ jobs:
 
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "ERROR: Step 1 failed with status $HTTP_STATUS"
+            cat /tmp/step1-response.txt
             exit 1
           fi
 
-      - name: Step 2 - Deploy Version B .lco
+      - name: Step 2 - Deploy Version B .lco and restart
         run: |
-          echo "## Step 2: Deploy Version B ($VERSION_B) via deploy folder" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 2: Deploy Version B ($VERSION_B) and restart Tomcat" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Find the lucee-server deploy folder
+          DEPLOY_DIR=$(find lucee-express -type d -name "deploy" -path "*/lucee-server/*" 2>/dev/null | head -1)
+
+          if [ -z "$DEPLOY_DIR" ]; then
+            # Create it if it doesn't exist
+            DEPLOY_DIR="lucee-express/lucee-server/deploy"
+            mkdir -p "$DEPLOY_DIR"
+          fi
+
+          echo "Deploy dir: $DEPLOY_DIR" | tee -a $GITHUB_STEP_SUMMARY
 
           # Copy the new .lco to the deploy folder
-          sudo cp $VERSION_B.lco /opt/lucee/tomcat/lucee-server/deploy/
-          sudo chown lucee:lucee /opt/lucee/tomcat/lucee-server/deploy/$VERSION_B.lco
+          cp $VERSION_B.lco "$DEPLOY_DIR/"
 
-          echo "Deployed $VERSION_B.lco to deploy folder" | tee -a $GITHUB_STEP_SUMMARY
-          ls -la /opt/lucee/tomcat/lucee-server/deploy/ | tee -a $GITHUB_STEP_SUMMARY
+          echo "Deployed $VERSION_B.lco" | tee -a $GITHUB_STEP_SUMMARY
+          ls -la "$DEPLOY_DIR/" | tee -a $GITHUB_STEP_SUMMARY
 
-      - name: Step 3 - Trigger restart via admin API
-        run: |
-          echo "## Step 3: Trigger restart" | tee -a $GITHUB_STEP_SUMMARY
+          # Restart Tomcat to pick up the new version
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Restarting Tomcat..." | tee -a $GITHUB_STEP_SUMMARY
 
-          # Call the restart endpoint
-          curl -s -X POST "http://127.0.0.1:8888/trigger-restart.cfm" || true
+          cd lucee-express
+          ./bin/shutdown.sh || true
+          sleep 5
+          ./bin/startup.sh
 
-          # Wait for restart to complete
+          # Wait for restart
           echo "Waiting for Lucee to restart..."
-          sleep 10
-
-          # Check if it's back up
-          for i in {1..30}; do
-            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ | grep -q "200\|302"; then
-              echo "Lucee is back up after restart"
+          for i in {1..60}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ 2>/dev/null | grep -q "200\|302\|404"; then
+              echo "Lucee is back up after $i seconds"
               break
             fi
-            echo "Waiting... ($i/30)"
-            sleep 2
+            sleep 1
           done
 
-      - name: Step 4 - Test admin access after update (BUG CHECK)
+          sleep 5
+
+      - name: Step 3 - Test admin access after update (BUG CHECK)
         run: |
-          echo "## Step 4: Test admin access after update - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 3: Test admin access after update - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # This should trigger LDEV-5725 if the bug exists
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/step4-response.txt http://127.0.0.1:8888/trigger-instanceof-check.cfm)
-          cat /tmp/step4-response.txt | tee -a $GITHUB_STEP_SUMMARY
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/step3-response.txt http://127.0.0.1:8888/trigger-instanceof-check.cfm)
+          cat /tmp/step3-response.txt | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
 
           # Check for the specific error
-          if grep -q "LDEV-5725 REPRODUCED" /tmp/step4-response.txt; then
+          if grep -q "LDEV-5725 REPRODUCED" /tmp/step3-response.txt; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ❌ BUG REPRODUCED: LDEV-5725 Component Casting Error" | tee -a $GITHUB_STEP_SUMMARY
             echo "The instanceof check failed due to classloader mismatch" | tee -a $GITHUB_STEP_SUMMARY
             exit 1
-          elif grep -q "casting" /tmp/step4-response.txt || grep -q "ComponentPageImpl" /tmp/step4-response.txt; then
+          elif grep -q "problem with casting" /tmp/step3-response.txt; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### ❌ POSSIBLE BUG: Found casting/ComponentPageImpl error" | tee -a $GITHUB_STEP_SUMMARY
-            grep -i "casting\|ComponentPageImpl" /tmp/step4-response.txt | tee -a $GITHUB_STEP_SUMMARY
+            echo "### ❌ BUG REPRODUCED: Component casting error in output" | tee -a $GITHUB_STEP_SUMMARY
+            grep -i "casting" /tmp/step3-response.txt | tee -a $GITHUB_STEP_SUMMARY
             exit 1
           else
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -176,27 +183,32 @@ jobs:
 
           curl -s http://127.0.0.1:8888/check-bundle-cache.cfm | tee -a $GITHUB_STEP_SUMMARY || true
 
+      - name: Tomcat logs
+        if: always()
+        run: |
+          echo "=== catalina.out ==="
+          cat lucee-express/logs/catalina.out || true
+
       - name: Lucee logs
         if: always()
         run: |
           echo ""
-          echo "=== catalina.out ==="
-          sudo cat /opt/lucee/tomcat/logs/catalina.out || true
-
-          echo ""
           echo "=== exception.log ==="
-          sudo cat /opt/lucee/tomcat/lucee-server/context/logs/exception.log || true
+          find lucee-express -name "exception.log" -exec cat {} \; 2>/dev/null || true
 
           echo ""
           echo "=== deploy.log ==="
-          sudo cat /opt/lucee/tomcat/lucee-server/context/logs/deploy.log || true
+          find lucee-express -name "deploy.log" -exec cat {} \; 2>/dev/null || true
 
       - name: List Felix cache
         if: always()
         run: |
           echo "=== Felix Cache Bundles ==="
-          sudo ls -la /opt/lucee/tomcat/lucee-server/felix-cache/ || true
+          find lucee-express -type d -name "felix-cache" -exec ls -la {} \; 2>/dev/null || true
 
           echo ""
           echo "=== Looking for multiple core bundles ==="
-          sudo grep -r "lucee.core\|patches" /opt/lucee/tomcat/lucee-server/felix-cache/*/bundle.info 2>/dev/null || true
+          find lucee-express -name "bundle.info" -exec grep -l "lucee.core\|patches\|\.lco" {} \; 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f"
+          done
