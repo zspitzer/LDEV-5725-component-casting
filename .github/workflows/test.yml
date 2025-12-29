@@ -68,6 +68,16 @@ jobs:
           cp tests/*.cfm lucee-express/webapps/ROOT/
           ls -la lucee-express/webapps/ROOT/
 
+      - name: Set up admin password
+        run: |
+          # Create the lucee-server context directory if it doesn't exist
+          mkdir -p lucee-express/lucee-server/context
+
+          # Create password.txt with a known password
+          echo "admin" > lucee-express/lucee-server/context/password.txt
+
+          echo "Admin password set to: admin"
+
       - name: Start Lucee with Version A
         run: |
           cd lucee-express
@@ -161,7 +171,7 @@ jobs:
           # This calls factory.restart() synchronously, which is the bug trigger
           echo "### Calling admin-change-version.cfm to trigger downgrade..." | tee -a $GITHUB_STEP_SUMMARY
 
-          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-change-response.txt "http://127.0.0.1:8888/admin-change-version.cfm?version=$VERSION_B" 2>&1)
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-change-response.txt "http://127.0.0.1:8888/admin-change-version.cfm?version=$VERSION_B&password=admin" 2>&1)
           cat /tmp/admin-change-response.txt | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
