@@ -6,18 +6,19 @@ on:
     inputs:
       LUCEE_VERSION_A:
         required: true
-        description: Initial Lucee version
+        description: Initial Lucee version (start with this)
         type: string
-        default: 7.0.0.299-SNAPSHOT
+        default: 7.0.0.374-SNAPSHOT
       LUCEE_VERSION_B:
         required: true
-        description: Version to update to
+        description: Version to deploy (downgrade to this)
         type: string
         default: 7.0.0.373-SNAPSHOT
 
 env:
   TOMCAT_TEMPLATE: https://cdn.lucee.org/express-templates/lucee-tomcat-11.0.14-template.zip
-  PUSH_VERSION_A: 7.0.0.299-SNAPSHOT
+  # DOWNGRADE scenario: start with higher version, deploy lower version
+  PUSH_VERSION_A: 7.0.0.374-SNAPSHOT
   PUSH_VERSION_B: 7.0.0.373-SNAPSHOT
 
 jobs:
@@ -129,9 +130,9 @@ jobs:
             echo "⚠ No archive bundle detected yet - admin may not be fully loaded" | tee -a $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Step 2 - Deploy Version B .lco and trigger HOT reload
+      - name: Step 2 - DOWNGRADE by deploying Version B .lco
         run: |
-          echo "## Step 2: Deploy Version B ($VERSION_B) and trigger HOT reload (not full restart)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 2: DOWNGRADE - Deploy Version B ($VERSION_B) via .lco (hot reload, not restart)" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Find the lucee-server deploy folder
@@ -171,9 +172,9 @@ jobs:
           # Give it a moment to stabilize
           sleep 2
 
-      - name: Step 3 - Test admin access after update (BUG CHECK)
+      - name: Step 3 - Test admin access after DOWNGRADE (BUG CHECK)
         run: |
-          echo "## Step 3: Test admin access after update - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 3: Test admin access after DOWNGRADE - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # First, hit the ACTUAL admin page - this is where the bug should trigger
