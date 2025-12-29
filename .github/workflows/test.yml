@@ -204,6 +204,15 @@ jobs:
           # Give it a moment to stabilize after restart
           sleep 3
 
+          # Check catalina.out for classloader errors (the error often appears there, not in HTTP response)
+          if grep -qi "bundle wiring.*no longer valid\|Cannot invoke.*BundleWiringImpl" lucee-express/logs/catalina.out; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ BUG REPRODUCED: OSGi bundle wiring error in Tomcat logs!" | tee -a $GITHUB_STEP_SUMMARY
+            echo "The bundle wiring became invalid during version change - classic LDEV-5725 symptom" | tee -a $GITHUB_STEP_SUMMARY
+            grep -i "bundle wiring\|BundleWiringImpl" lucee-express/logs/catalina.out | head -10 | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
       - name: Step 4 - Test admin access after DOWNGRADE (BUG CHECK)
         run: |
           echo "## Step 4: Test admin access after DOWNGRADE - verify no casting errors" | tee -a $GITHUB_STEP_SUMMARY
