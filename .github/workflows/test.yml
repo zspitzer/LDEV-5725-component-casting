@@ -1,0 +1,202 @@
+name: LDEV-5725 Component Casting Test
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      LUCEE_VERSION_A:
+        required: true
+        description: Initial Lucee version
+        type: string
+        default: 7.0.0.299-SNAPSHOT
+      LUCEE_VERSION_B:
+        required: true
+        description: Version to update to
+        type: string
+        default: 7.0.0.373-SNAPSHOT
+
+env:
+  LUCEE_INSTALLER_VERSION: 6.2.1.1
+  PUSH_VERSION_A: 7.0.0.299-SNAPSHOT
+  PUSH_VERSION_B: 7.0.0.373-SNAPSHOT
+
+jobs:
+  test-component-casting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set versions for push workflows
+        if: github.event_name == 'push'
+        run: |
+          echo "VERSION_A=${{ env.PUSH_VERSION_A }}" >> $GITHUB_ENV
+          echo "VERSION_B=${{ env.PUSH_VERSION_B }}" >> $GITHUB_ENV
+
+      - name: Set versions for manual workflows
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "VERSION_A=${{ github.event.inputs.LUCEE_VERSION_A }}" >> $GITHUB_ENV
+          echo "VERSION_B=${{ github.event.inputs.LUCEE_VERSION_B }}" >> $GITHUB_ENV
+
+      - name: Cache Lucee Installer
+        uses: actions/cache@v4
+        with:
+          path: lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run
+          key: lucee-installer-${{ env.LUCEE_INSTALLER_VERSION }}
+
+      - name: Download Lucee Installer and JARs
+        run: |
+          # Download installer if not cached
+          if [ ! -f "lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run" ]; then
+            echo "Downloading Lucee installer..."
+            curl --fail -s https://cdn.lucee.org/lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run \
+              -o lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run
+          fi
+          ls -lh *.run
+
+          # Download version A jar
+          echo "Downloading Lucee $VERSION_A..."
+          curl --fail -s https://cdn.lucee.org/lucee-$VERSION_A.jar -o lucee-$VERSION_A.jar
+          ls -lh lucee-$VERSION_A.jar
+
+          # Download version B lco (for deploy folder update)
+          echo "Downloading Lucee $VERSION_B .lco..."
+          curl --fail -s https://cdn.lucee.org/$VERSION_B.lco -o $VERSION_B.lco
+          ls -lh $VERSION_B.lco
+
+      - name: Install Lucee with Version A
+        run: |
+          chmod +x lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run
+          sudo ./lucee-${{ env.LUCEE_INSTALLER_VERSION }}-linux-x64-installer.run \
+            --mode unattended --installconn false --installmodcfml false --installiis false \
+            --startatboot false --luceepass admin --systemuser lucee --installjre true
+
+          # Replace loader jar with version A
+          sudo rm -f /opt/lucee/lib/lucee-*.jar
+          sudo cp lucee-$VERSION_A.jar /opt/lucee/lib/
+
+          echo "Installed Lucee with version A: $VERSION_A"
+
+      - name: Start Lucee
+        run: |
+          sudo /opt/lucee/lucee_ctl start
+          sleep 5
+
+          # Verify it's running
+          echo "Checking Lucee version..."
+          curl -s http://127.0.0.1:8888/lucee/admin/server.cfm || echo "Admin page load attempted"
+
+      - name: Copy test files
+        run: |
+          sudo cp tests/*.cfm /opt/lucee/tomcat/webapps/ROOT/
+          sudo chown lucee:lucee /opt/lucee/tomcat/webapps/ROOT/*.cfm
+
+      - name: Step 1 - Access admin to load archive bundle
+        run: |
+          echo "## Step 1: Access admin with Version A ($VERSION_A)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # This loads the lucee-admin.lar bundle with version A's classes
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/step1-response.txt http://127.0.0.1:8888/check-bundle-cache.cfm)
+          cat /tmp/step1-response.txt | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "ERROR: Step 1 failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
+      - name: Step 2 - Deploy Version B .lco
+        run: |
+          echo "## Step 2: Deploy Version B ($VERSION_B) via deploy folder" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Copy the new .lco to the deploy folder
+          sudo cp $VERSION_B.lco /opt/lucee/tomcat/lucee-server/deploy/
+          sudo chown lucee:lucee /opt/lucee/tomcat/lucee-server/deploy/$VERSION_B.lco
+
+          echo "Deployed $VERSION_B.lco to deploy folder" | tee -a $GITHUB_STEP_SUMMARY
+          ls -la /opt/lucee/tomcat/lucee-server/deploy/ | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Step 3 - Trigger restart via admin API
+        run: |
+          echo "## Step 3: Trigger restart" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Call the restart endpoint
+          curl -s -X POST "http://127.0.0.1:8888/trigger-restart.cfm" || true
+
+          # Wait for restart to complete
+          echo "Waiting for Lucee to restart..."
+          sleep 10
+
+          # Check if it's back up
+          for i in {1..30}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8888/ | grep -q "200\|302"; then
+              echo "Lucee is back up after restart"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+      - name: Step 4 - Test admin access after update (BUG CHECK)
+        run: |
+          echo "## Step 4: Test admin access after update - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # This should trigger LDEV-5725 if the bug exists
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/step4-response.txt http://127.0.0.1:8888/trigger-instanceof-check.cfm)
+          cat /tmp/step4-response.txt | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
+
+          # Check for the specific error
+          if grep -q "LDEV-5725 REPRODUCED" /tmp/step4-response.txt; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ BUG REPRODUCED: LDEV-5725 Component Casting Error" | tee -a $GITHUB_STEP_SUMMARY
+            echo "The instanceof check failed due to classloader mismatch" | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          elif grep -q "casting" /tmp/step4-response.txt || grep -q "ComponentPageImpl" /tmp/step4-response.txt; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ POSSIBLE BUG: Found casting/ComponentPageImpl error" | tee -a $GITHUB_STEP_SUMMARY
+            grep -i "casting\|ComponentPageImpl" /tmp/step4-response.txt | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ✅ No casting error detected" | tee -a $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check bundle cache status
+        if: always()
+        run: |
+          echo "## Bundle Cache Status" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          curl -s http://127.0.0.1:8888/check-bundle-cache.cfm | tee -a $GITHUB_STEP_SUMMARY || true
+
+      - name: Lucee logs
+        if: always()
+        run: |
+          echo ""
+          echo "=== catalina.out ==="
+          sudo cat /opt/lucee/tomcat/logs/catalina.out || true
+
+          echo ""
+          echo "=== exception.log ==="
+          sudo cat /opt/lucee/tomcat/lucee-server/context/logs/exception.log || true
+
+          echo ""
+          echo "=== deploy.log ==="
+          sudo cat /opt/lucee/tomcat/lucee-server/context/logs/deploy.log || true
+
+      - name: List Felix cache
+        if: always()
+        run: |
+          echo "=== Felix Cache Bundles ==="
+          sudo ls -la /opt/lucee/tomcat/lucee-server/felix-cache/ || true
+
+          echo ""
+          echo "=== Looking for multiple core bundles ==="
+          sudo grep -r "lucee.core\|patches" /opt/lucee/tomcat/lucee-server/felix-cache/*/bundle.info 2>/dev/null || true

@@ -1,0 +1,10 @@
+# Test artifacts
+lucee-workdir/
+test-output/
+*.jar
+*.lco
+*.run
+
+# IDE
+.vscode/
+.idea/
