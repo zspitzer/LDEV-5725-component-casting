@@ -172,15 +172,23 @@ jobs:
           echo "### Calling admin-change-version.cfm to trigger downgrade..." | tee -a $GITHUB_STEP_SUMMARY
 
           HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-change-response.txt "http://127.0.0.1:8888/admin-change-version.cfm?version=$VERSION_B&password=admin" 2>&1)
+          echo "### Response body:" | tee -a $GITHUB_STEP_SUMMARY
           cat /tmp/admin-change-response.txt | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
+          echo "Response size: $(wc -c < /tmp/admin-change-response.txt) bytes" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Check if the admin API call returned an error about casting
-          if grep -qi "problem with casting\|ComponentPageImpl\|LDEV-5725 REPRODUCED" /tmp/admin-change-response.txt; then
+          # Check if the admin API call returned an error about casting or classloader issues
+          if grep -qi "problem with casting\|ComponentPageImpl\|LDEV-5725 REPRODUCED\|ClassNotFoundException\|NoClassDefFoundError\|bundle wiring.*no longer valid" /tmp/admin-change-response.txt; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### ❌ BUG REPRODUCED: LDEV-5725 Component Casting Error during version change!" | tee -a $GITHUB_STEP_SUMMARY
+            echo "### ❌ BUG REPRODUCED: Classloader/casting error during version change!" | tee -a $GITHUB_STEP_SUMMARY
             exit 1
+          fi
+
+          # Also check if we got HTTP 500 which indicates something broke
+          if [ "$HTTP_STATUS" == "500" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ⚠️ HTTP 500 - Engine may be in broken state" | tee -a $GITHUB_STEP_SUMMARY
           fi
 
           # Give it a moment to stabilize after restart
