@@ -130,51 +130,55 @@ jobs:
             echo "⚠ No archive bundle detected yet - admin may not be fully loaded" | tee -a $GITHUB_STEP_SUMMARY
           fi
 
-      - name: Step 2 - DOWNGRADE by deploying Version B .lco
+      - name: Step 2 - Copy .lco to patches folder (prep for admin API downgrade)
         run: |
-          echo "## Step 2: DOWNGRADE - Deploy Version B ($VERSION_B) via .lco (hot reload, not restart)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 2: Prepare for DOWNGRADE via Admin API" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Find the lucee-server deploy folder
-          DEPLOY_DIR=$(find lucee-express -type d -name "deploy" -path "*/lucee-server/*" 2>/dev/null | head -1)
+          # Find the lucee-server patches folder
+          PATCHES_DIR=$(find lucee-express -type d -name "patches" -path "*/lucee-server/*" 2>/dev/null | head -1)
 
-          if [ -z "$DEPLOY_DIR" ]; then
+          if [ -z "$PATCHES_DIR" ]; then
             # Create it if it doesn't exist
-            DEPLOY_DIR="lucee-express/lucee-server/deploy"
-            mkdir -p "$DEPLOY_DIR"
+            PATCHES_DIR="lucee-express/lucee-server/patches"
+            mkdir -p "$PATCHES_DIR"
           fi
 
-          echo "Deploy dir: $DEPLOY_DIR" | tee -a $GITHUB_STEP_SUMMARY
+          echo "Patches dir: $PATCHES_DIR" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Copy the new .lco to the deploy folder
-          cp $VERSION_B.lco "$DEPLOY_DIR/"
+          # Copy the target version .lco to the patches folder
+          cp $VERSION_B.lco "$PATCHES_DIR/"
 
-          echo "Deployed $VERSION_B.lco" | tee -a $GITHUB_STEP_SUMMARY
-          ls -la "$DEPLOY_DIR/" | tee -a $GITHUB_STEP_SUMMARY
+          echo "Copied $VERSION_B.lco to patches folder" | tee -a $GITHUB_STEP_SUMMARY
+          ls -la "$PATCHES_DIR/" | tee -a $GITHUB_STEP_SUMMARY
 
-          # Wait for controller to pick up the .lco (polls every 10 seconds)
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Waiting for controller to pick up .lco (polls every 10 seconds)..." | tee -a $GITHUB_STEP_SUMMARY
-
-          # Wait and poll for version change
-          for i in {1..30}; do
-            sleep 3
-            # Check current version
-            CURRENT_VERSION=$(curl -s http://127.0.0.1:8888/check-bundle-cache.cfm 2>/dev/null | grep "Lucee Version:" | head -1 || echo "unknown")
-            echo "Check $i: $CURRENT_VERSION"
-
-            if echo "$CURRENT_VERSION" | grep -q "$VERSION_B"; then
-              echo "Version updated to $VERSION_B after $((i*3)) seconds" | tee -a $GITHUB_STEP_SUMMARY
-              break
-            fi
-          done
-
-          # Give it a moment to stabilize
-          sleep 2
-
-      - name: Step 3 - Test admin access after DOWNGRADE (BUG CHECK)
+      - name: Step 3 - DOWNGRADE via Admin API (BUG TRIGGER)
         run: |
-          echo "## Step 3: Test admin access after DOWNGRADE - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 3: DOWNGRADE via Admin API - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Use the admin API to trigger the version change
+          # This calls factory.restart() synchronously, which is the bug trigger
+          echo "### Calling admin-change-version.cfm to trigger downgrade..." | tee -a $GITHUB_STEP_SUMMARY
+
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-change-response.txt "http://127.0.0.1:8888/admin-change-version.cfm?version=$VERSION_B" 2>&1)
+          cat /tmp/admin-change-response.txt | tee -a $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
+
+          # Check if the admin API call returned an error about casting
+          if grep -qi "problem with casting\|ComponentPageImpl\|LDEV-5725 REPRODUCED" /tmp/admin-change-response.txt; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ BUG REPRODUCED: LDEV-5725 Component Casting Error during version change!" | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # Give it a moment to stabilize after restart
+          sleep 3
+
+      - name: Step 4 - Test admin access after DOWNGRADE (BUG CHECK)
+        run: |
+          echo "## Step 4: Test admin access after DOWNGRADE - verify no casting errors" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # First, hit the ACTUAL admin page - this is where the bug should trigger
