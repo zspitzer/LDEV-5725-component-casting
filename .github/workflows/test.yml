@@ -90,10 +90,22 @@ jobs:
 
       - name: Step 1 - Access admin to load archive bundle
         run: |
-          echo "## Step 1: Access admin with Version A ($VERSION_A)" | tee -a $GITHUB_STEP_SUMMARY
+          echo "## Step 1: Access ACTUAL ADMIN with Version A ($VERSION_A)" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # This loads the lucee-admin.lar bundle with version A's classes
+          # First hit the actual admin page to load lucee-admin.lar bundle properly
+          echo "### Hitting /lucee/admin/server.cfm to load admin archive bundle..." | tee -a $GITHUB_STEP_SUMMARY
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-response.txt http://127.0.0.1:8888/lucee/admin/server.cfm 2>&1)
+          echo "Admin HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
+
+          # Also hit web admin
+          echo "### Hitting /lucee/admin/web.cfm..." | tee -a $GITHUB_STEP_SUMMARY
+          curl -s -o /tmp/admin-web.txt http://127.0.0.1:8888/lucee/admin/web.cfm 2>&1 || true
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Now check the bundle cache to confirm admin archive is loaded
+          echo "### Checking bundle cache after admin access..." | tee -a $GITHUB_STEP_SUMMARY
           HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/step1-response.txt http://127.0.0.1:8888/check-bundle-cache.cfm)
           cat /tmp/step1-response.txt | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -103,6 +115,13 @@ jobs:
             echo "ERROR: Step 1 failed with status $HTTP_STATUS"
             cat /tmp/step1-response.txt
             exit 1
+          fi
+
+          # Confirm we see archive bundles loaded
+          if grep -q "ARCHIVE:" /tmp/step1-response.txt; then
+            echo "✓ Archive bundle loaded successfully" | tee -a $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠ No archive bundle detected yet - admin may not be fully loaded" | tee -a $GITHUB_STEP_SUMMARY
           fi
 
       - name: Step 2 - Deploy Version B .lco and trigger HOT reload
@@ -156,14 +175,30 @@ jobs:
           echo "## Step 3: Test admin access after update - THIS IS WHERE THE BUG SHOULD MANIFEST" | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # This should trigger LDEV-5725 if the bug exists
+          # First, hit the ACTUAL admin page - this is where the bug should trigger
+          echo "### Hitting /lucee/admin/server.cfm after version update..." | tee -a $GITHUB_STEP_SUMMARY
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/admin-after-update.txt http://127.0.0.1:8888/lucee/admin/server.cfm 2>&1)
+          echo "Admin HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
+
+          # Check if admin returned an error about casting
+          if grep -qi "problem with casting\|ComponentPageImpl" /tmp/admin-after-update.txt; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### ❌ BUG REPRODUCED in Admin: LDEV-5725 Component Casting Error" | tee -a $GITHUB_STEP_SUMMARY
+            grep -i "casting\|ComponentPageImpl" /tmp/admin-after-update.txt | head -20 | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Also run our diagnostic test
+          echo "### Running diagnostic instanceof check..." | tee -a $GITHUB_STEP_SUMMARY
           HTTP_STATUS=$(curl -s -w "%{http_code}" -o /tmp/step3-response.txt http://127.0.0.1:8888/trigger-instanceof-check.cfm)
           cat /tmp/step3-response.txt | tee -a $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "HTTP Status: $HTTP_STATUS" | tee -a $GITHUB_STEP_SUMMARY
 
           # Check for the specific error
-          if grep -q "LDEV-5725 REPRODUCED" /tmp/step3-response.txt; then
+          if grep -q "LDEV-5725 CONDITION DETECTED" /tmp/step3-response.txt; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### ❌ BUG REPRODUCED: LDEV-5725 Component Casting Error" | tee -a $GITHUB_STEP_SUMMARY
             echo "The instanceof check failed due to classloader mismatch" | tee -a $GITHUB_STEP_SUMMARY
